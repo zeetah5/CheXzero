@@ -10,7 +10,7 @@ from typing import List, Tuple
 
 import torch
 from torch.utils import data
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 import torch.nn as nn
 from torchvision.transforms import Compose, Normalize, Resize, InterpolationMode
 
@@ -26,6 +26,13 @@ from eval import evaluate, plot_roc, accuracy, sigmoid, bootstrap, compute_cis
 CXR_FILEPATH = '../../project-files/data/test_cxr.h5'
 FINAL_LABEL_PATH = '../../project-files/data/final_paths.csv'
 
+
+"""
+Custom class that loads X-ray images from an hdf5 file. 
+It reads in the images from the HD5 dataset and then expands grayscale images to three channels and 
+applies the transformations. 
+
+"""
 class CXRTestDataset(data.Dataset):
     """Represents an abstract HDF5 dataset.
     
@@ -62,6 +69,9 @@ class CXRTestDataset(data.Dataset):
     
         return sample
 
+"""
+Loads the CLIP model, either from pretrained weights or from a specified path. 
+"""
 def load_clip(model_path, pretrained=False, context_length=77): 
     """
     FUNCTION: load_clip
@@ -93,6 +103,14 @@ def load_clip(model_path, pretrained=False, context_length=77):
         raise
     return model
 
+"""
+Comptutes the text embeddings for class names using specified templates.  Similar to the one in medCLIP.
+Class names:  List of class names, eg ['Aclesistas', 'pneumothorax']
+Templates: List of text templates: eg ['a photo of a {}'].
+
+Key step: For each class name: 1: Formats the templates with the class names. 2: Tokenizes and encodes the text using the CLIP text encoder.
+                               3: Normalizes and averages the embeddings. 
+"""
 def zeroshot_classifier(classnames, templates, model, context_length=77):
     """
     FUNCTION: zeroshot_classifier
@@ -126,6 +144,11 @@ def zeroshot_classifier(classnames, templates, model, context_length=77):
         zeroshot_weights = torch.stack(zeroshot_weights, dim=1)
     return zeroshot_weights
 
+
+"""
+Generates predictions by computing the the similarity between the images embeddings and text embeddings. 
+Here can we determine if we want to use softmax evaluation or sigmoid.
+"""
 def predict(loader, model, zeroshot_weights, softmax_eval=True, verbose=0): 
     """
     FUNCTION: predict
@@ -153,9 +176,16 @@ def predict(loader, model, zeroshot_weights, softmax_eval=True, verbose=0):
             image_features /= image_features.norm(dim=-1, keepdim=True) # (1, 768)
 
             # obtain logits
+            """
+            Logits is the cosine distance which is calcualted in this way. 
+            """
             logits = image_features @ zeroshot_weights # (1, num_classes)
             logits = np.squeeze(logits.numpy(), axis=0) # (num_classes,)
-        
+            
+
+            """
+            If we want to do multilabel classification does this make it possible.
+            """
             if softmax_eval is False: 
                 norm_logits = (logits - logits.mean()) / (logits.std())
                 logits = sigmoid(norm_logits) 
@@ -175,6 +205,9 @@ def predict(loader, model, zeroshot_weights, softmax_eval=True, verbose=0):
     y_pred = np.array(y_pred)
     return np.array(y_pred)
 
+"""
+It runs a prediction for a single template.  
+"""
 def run_single_prediction(cxr_labels, template, model, loader, softmax_eval=True, context_length=77): 
     """
     FUNCTION: run_single_prediction
@@ -197,6 +230,10 @@ def run_single_prediction(cxr_labels, template, model, loader, softmax_eval=True
     y_pred = predict(loader, model, zeroshot_weights, softmax_eval=softmax_eval)
     return y_pred
 
+"""
+Not entirely sure what the purpose of this is. 
+I processes alternative labels and maps them to the main labels. 
+"""
 def process_alt_labels(alt_labels_dict, cxr_labels): 
     """
         Process alt labels and return relevant info. If `alt_labels_dict` is 
@@ -241,6 +278,10 @@ def process_alt_labels(alt_labels_dict, cxr_labels):
     
     return alt_label_list, alt_label_idx_map 
 
+"""
+Performs softmax evaluation between positive and negative templates. 
+The interesting de
+"""
 def run_softmax_eval(model, loader, eval_labels: list, pair_template: tuple, context_length: int = 77): 
     """
     Run softmax evaluation to obtain a single prediction from the model.
@@ -260,6 +301,10 @@ def run_softmax_eval(model, loader, eval_labels: list, pair_template: tuple, con
     y_pred = np.exp(pos_pred) / sum_pred
     return y_pred
     
+"""
+Runs the zero shot experimement across multiple templates. 
+The alt labels are:   The alt labels might not necessariliy be used. 
+"""
 def run_experiment(model, cxr_labels, cxr_templates, loader, y_true, alt_labels_dict=None, softmax_eval=True, context_length=77, use_bootstrap=True): 
     '''
     FUNCTION: run_experiment
@@ -315,6 +360,9 @@ def run_experiment(model, cxr_labels, cxr_templates, loader, y_true, alt_labels_
 
     return results, y_pred
 
+"""
+Loads the ground truth labels from a CSV file.
+"""
 def make_true_labels(
     cxr_true_labels_path: str, 
     cxr_labels: List[str],
@@ -337,13 +385,21 @@ def make_true_labels(
     # create ground truth labels
     full_labels = pd.read_csv(cxr_true_labels_path)
     if cutlabels: 
+
+        # picks out the labels from the csv file. 
         full_labels = full_labels.loc[:, cxr_labels]
     else: 
         full_labels.drop(full_labels.columns[0], axis=1, inplace=True)
 
+    # Converts the labels to a numpy file.
     y_true = full_labels.to_numpy()
     return y_true
 
+
+"""
+Initializes the model and the dataloader. Might be a problem if we want to use differnt data which will use different values 
+for normalizing. 
+"""
 def make(
     model_path: str, 
     cxr_filepath: str, 
@@ -394,14 +450,16 @@ def make(
     
     return model, loader
 
-## Run the model on the data set using ensembled models
+"""
+This is important since we will several models will we first need to assemble the models. 
+"""
 def ensemble_models(
-    model_paths: List[str], 
-    cxr_filepath: str, 
-    cxr_labels: List[str], 
-    cxr_pair_template: Tuple[str], 
-    cache_dir: str = None, 
-    save_name: str = None,
+    model_paths: List[str],   # list of paths to model weights.
+    cxr_filepath: str,        # Path to the images
+    cxr_labels: List[str],    # list of class names.
+    cxr_pair_template: Tuple[str],   # Template pair for softmax evaluation.
+    cache_dir: str = None,    # directory to cacher predictions.
+    save_name: str = None,    # optional prefix for cached prediction files.
 ) -> Tuple[List[np.ndarray], np.ndarray]: 
     """
     Given a list of `model_paths`, ensemble model and return
@@ -446,6 +504,9 @@ def ensemble_models(
     
     return predictions, y_pred_avg
 
+"""
+Main function to run the zero-shot classification pipeline
+"""
 def run_zero_shot(cxr_labels, cxr_templates, model_path, cxr_filepath, final_label_path, alt_labels_dict: dict = None, softmax_eval = True, context_length=77, pretrained: bool = False, use_bootstrap=True, cutlabels=True): 
     """
     FUNCTION: run_zero_shot
@@ -495,6 +556,10 @@ def run_zero_shot(cxr_labels, cxr_templates, model_path, cxr_filepath, final_lab
                              alt_labels_dict=alt_labels_dict, softmax_eval=softmax_eval, context_length=context_length, use_bootstrap=use_bootstrap)
     return results, y_pred
 
+
+"""
+Function what basically everything we want for use.
+"""
 def run_cxr_zero_shot(model_path, context_length=77, pretrained=False): 
     """
     FUNCTION: run_cxr_zero_shot
@@ -529,23 +594,12 @@ def run_cxr_zero_shot(model_path, context_length=77, pretrained=False):
     
     return cxr_labels, cxr_results[0]
 
+
+"""
+This is not important. It just runs zero-shot classification on a validation set for tasks like sex classification. 
+"""
 def validation_zero_shot(model_path, context_length=77, pretrained=False): 
-    """
-    FUNCTION: validation_zero_shot
-    --------------------------------------
-    This function uses the CheXpert validation dataset to make predictions
-    on an alternative task (ap/pa, sex) in order to tune hyperparameters.
     
-    args: 
-        * model_path - string, filepath of model being evaluated
-        * context_length (optional) - int, max number of tokens of text inputted into the model. 
-        * pretrained (optional) - bool, whether or not model uses pretrained clip weights
-        * use_bootstrap (optional) - bool, whether or not to use bootstrap sampling
-    
-    Returns an array of labels, and an array of results per template, 
-    each consists of a tuple containing a pandas dataframes 
-    for n bootstrap samples, and another pandas dataframe with the confidence intervals for each class.
-    """
     cxr_sex_labels = ['Female', 'Male']
 
     cxr_sex_templates = [
